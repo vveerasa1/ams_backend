@@ -1,0 +1,92 @@
+const User = require("../models/user.js");
+const { successResponse } = require("../utils/responseHandler.js");
+const CustomError = require("../utils/customError.js");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcrypt");
+const nodemailer = require("nodemailer");
+require("dotenv").config();
+
+const accessTokenSecretKey = process.env.ACCESS_TOKEN_SECRET;
+const accessTokenExpireIn = process.env.ACCESS_TOKEN_EXPIRES_IN;
+
+const login = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      throw new CustomError("Email and password are required", 400);
+    }
+    const user = await User.findOne({ email, status: "Active" }).populate(
+      "role",
+      "name"
+    );
+    let role = user?.role.name;
+    if (role === "Employee") {
+      const usersExist = await User.find({ reportingTo: user._id });
+      if (usersExist) {
+        role = "Reporter";
+      }
+    }
+    if (!user) {
+      throw new CustomError("Invalid credentials", 403);
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+
+    if (!isMatch) {
+      throw new CustomError("Invalid credentials", 403);
+    }
+
+    const access_token = jwt.sign(
+      { id: user._id, role: role },
+      accessTokenSecretKey,
+      {
+        expiresIn: accessTokenExpireIn,
+      }
+    );
+    const { password: _, ...userWithoutPassword } = user.toObject();
+
+    return successResponse(res, "Login successful", {
+      access_token,
+      user: userWithoutPassword,
+      role: role,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const sendOtp = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) throw new CustomError("User not found", 404);
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.otp = otp;
+    user.otpExpires = Date.now() + 10 * 60 * 1000;
+    await user.save();
+
+    // Send email directly here
+    let transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL,
+        pass: process.env.PASSWORD,
+      },
+    });
+
+    await transporter.sendMail({
+      from: process.env.EMAIL,
+      to: email,
+      subject: "Your OTP Code",
+      text: `Your OTP is: ${otp}`,
+    });
+
+    return successResponse(res, "OTP sent to email");
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports = { login, sendOtp };
