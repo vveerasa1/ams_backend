@@ -21,12 +21,7 @@ const login = async (req, res, next) => {
       "name"
     );
     let role = user?.role.name;
-    if (role === "Employee") {
-      const usersExist = await User.find({ reportingTo: user._id });
-      if (usersExist) {
-        role = "Reporter";
-      }
-    }
+
     if (!user) {
       throw new CustomError("Invalid credentials", 403);
     }
@@ -89,4 +84,27 @@ const sendOtp = async (req, res, next) => {
   }
 };
 
-module.exports = { login, sendOtp };
+const verifyOtp = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) throw new CustomError("User not found", 404);
+
+    if (
+      !user.otp ||
+      user.otp !== otp ||
+      !user.otpExpires ||
+      user.otpExpires < Date.now()
+    ) {
+      throw new CustomError("Invalid or expired OTP", 400);
+    }
+    user.otp = undefined;
+    user.otpExpires = undefined;
+    await user.save();
+    return successResponse(res, "OTP verified successfully");
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports = { login, sendOtp, verifyOtp };

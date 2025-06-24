@@ -1,5 +1,5 @@
 const User = require("../models/user.js");
-const Appraisal = require("../models/appraisal");
+const Appraisal = require("../models/appraisal.js");
 const Point = require("../models/point.js");
 const Role = require("../models/role.js");
 const { successResponse } = require("../utils/responseHandler.js");
@@ -7,7 +7,8 @@ const CustomError = require("../utils/customError.js");
 const bcrypt = require("bcrypt");
 const { s3Uploads, deleteFromS3 } = require("../utils/s3Uploads.js");
 const nodemailer = require("nodemailer");
-const AppraisalTemplate = require("../models/appraisalTemplate");
+const AppraisalTemplate = require("../models/appraisalTemplate.js");
+const Department = require("../models/department.js");
 
 require("dotenv").config();
 
@@ -15,17 +16,17 @@ const createOrUpdateUser = async (req, res, next) => {
   try {
     const details = req.body.user;
     const data = JSON.parse(details);
-    const userId = req.params.id;
-    const isUpdate = !!userId;
+    const updatingUserId = data.id; // The employee being updated (from body)
+    const modifierId = data.modifierId; // The user performing the update (from path variable)
+    const isUpdate = !!updatingUserId;
+
+    const superAdminRole = await Role.findOne({ name: "Super Admin" });
+    const superAdminId = superAdminRole?._id?.toString();
+    console.log(superAdminId);
+    console.log(updatingUserId);
 
     let existingUser = null;
     let oldReportingId = null;
-
-    if (isUpdate) {
-      existingUser = await User.findById(userId);
-      if (!existingUser) throw new CustomError("User not found", 404);
-      oldReportingId = existingUser.reportingTo?.toString();
-    }
 
     if (req.file) {
       if (isUpdate && existingUser.profilePhotoUrl) {
@@ -38,7 +39,32 @@ const createOrUpdateUser = async (req, res, next) => {
 
     let user;
     if (isUpdate) {
-      user = await User.findByIdAndUpdate(userId, data, { new: true });
+      existingUser = await User.findById(updatingUserId);
+
+      if (!existingUser) throw new CustomError("User not found", 404);
+      oldReportingId = existingUser.reportingTo?.toString();
+
+      if (
+        superAdminId === existingUser.role.toString() &&
+        (data.status !== existingUser.status ||
+          data.role !== existingUser.role.toString())
+      ) {
+        throw new CustomError(
+          "You cannot update Super Admin's status or role",
+          403
+        );
+      }
+
+      if (
+        existingUser._id?.toString() === modifierId &&
+        (data.status !== existingUser.status || data.role !== existingUser.role)
+      ) {
+        throw new CustomError("You cannot update your own status or role", 403);
+      }
+
+      data.modifiedBy = modifierId;
+      data.modifiedTime = new Date();
+      user = await User.findByIdAndUpdate(updatingUserId, data, { new: true });
     } else {
       const alreadyExists = await User.findOne({ email: data.email });
       if (alreadyExists) {
@@ -47,6 +73,9 @@ const createOrUpdateUser = async (req, res, next) => {
 
       const plainPassword = Math.random().toString(36).slice(-8);
       data.password = await bcrypt.hash(plainPassword, 10);
+
+      // data.readBy = [data.createdBy];
+      // data.seenBy = [data.createdBy];
 
       user = await User.create(data);
 
@@ -87,11 +116,75 @@ const createOrUpdateUser = async (req, res, next) => {
         $addToSet: { teamMembers: userObjectId },
       });
     }
+    const { password, ...userWithoutPassword } = user.toObject();
 
     return successResponse(
       res,
       `User ${isUpdate ? "updated" : "created"} successfully`,
-      user
+      userWithoutPassword
+    );
+  } catch (err) {
+    console.log(err);
+    next(err);
+  }
+};
+
+const updateUserField = async (req, res, next) => {
+  try {
+    const { id } = req.params; // User ID to update (the target)
+    const { field, value, modifierId } = req.body; // Field name, new value, and who is updating
+
+    if (!field || typeof value === "undefined") {
+      throw new CustomError("Field and value are required", 400);
+    }
+
+    // Get Super Admin role id
+    const superAdminRole = await Role.findOne({ name: "Super Admin" });
+    const superAdminId = superAdminRole?._id?.toString();
+
+    const userToUpdate = await User.findById(id);
+    if (!userToUpdate) throw new CustomError("User not found", 404);
+
+    // Prevent updating own status or role
+    if (id === modifierId && (field === "status" || field === "role")) {
+      throw new CustomError("You cannot update your own status or role", 403);
+    }
+
+    // Prevent updating Super Admin's status or role
+    if (
+      userToUpdate.role?.toString() === superAdminId &&
+      (field === "status" || field === "role")
+    ) {
+      throw new CustomError(
+        "You cannot update Super Admin's status or role",
+        403
+      );
+    }
+
+    // Prevent updating password here if you want
+    if (field === "password") {
+      throw new CustomError("Cannot update password using this API", 403);
+    }
+
+    // Build dynamic update object
+    const updateObj = {
+      [field]: value,
+      modifiedTime: new Date(),
+      modifiedBy: modifierId,
+    };
+
+    const updatedUser = await User.findByIdAndUpdate(id, updateObj, {
+      new: true,
+    });
+
+    if (!updatedUser) throw new CustomError("User not found", 404);
+
+    const { password, ...userWithoutPassword } = updatedUser.toObject();
+
+    return successResponse(
+      res,
+      "User field updated successfully",
+      userWithoutPassword
     );
   } catch (err) {
     next(err);
@@ -100,22 +193,28 @@ const createOrUpdateUser = async (req, res, next) => {
 
 const getAllUsers = async (req, res, next) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
+    const page = parseInt(req.query.pageIndex) || 1;
+    const limit = parseInt(req.query.pageSize) || 10;
     const skip = (page - 1) * limit;
 
-    const { search = "", designation, department, totalPointsRange, role } = req.query;
+    // const viewerId = req.params.id; // 👈 ID of the user fetching the list (e.g., HR viewing users)
+
+    const {
+      search = "",
+      designation,
+      department,
+      totalPointsRange,
+      role,
+    } = req.query;
 
     // Find the Super Admin role id
-    const superAdminRole = await Role.findOne({ name: "Super Admin" });
+    // const superAdminRole = await Role.findOne({ name: "Super Admin" });
     let filter = {
       status: "Active", // ✅ Only fetch users with active status
+      // _id: { $ne: viewerId }, // ✅ Exclude the current user from the results
     };
-    if (superAdminRole) {
-      filter.role = { $ne: superAdminRole._id };
-    }
+
     if (totalPointsRange) {
-      const [min, max] = totalPointsRange.split("-").map(Number);
       if (!isNaN(min) && !isNaN(max)) {
         filter.totalPoints = { $gte: min, $lte: max };
       }
@@ -136,8 +235,21 @@ const getAllUsers = async (req, res, next) => {
       filter.designation = designation;
     }
 
-    if (role) {
-      filter.role = role;
+    if (role && role !== "[]") {
+      console.log("here");
+      let roleArray = role;
+      if (typeof role === "string" && role.startsWith("[")) {
+        // Remove brackets and split by comma
+        roleArray = role
+          .replace(/[\[\]\s]/g, "") // remove brackets and spaces
+          .split(",")
+          .filter(Boolean); // remove empty strings
+      }
+      if (Array.isArray(roleArray) && roleArray.length > 0) {
+        filter.role = { $in: roleArray };
+      } else if (roleArray) {
+        filter.role = roleArray;
+      }
     }
 
     // Department filter
@@ -145,16 +257,52 @@ const getAllUsers = async (req, res, next) => {
       filter.department = department;
     }
 
-    const [users, total] = await Promise.all([
-      User.find(filter)
-        .skip(skip)
-        .limit(limit)
-        .populate({ path: "role", select: "name" }),
-      User.countDocuments(filter),
-    ]);
+    const { source } = req.query;
+
+    let users, total;
+
+    if (source === "mobile") {
+      // For mobile, fetch all users without pagination
+      [users, total] = await Promise.all([
+        User.find(filter)
+          .populate({ path: "role", select: "name" })
+          .populate({ path: "department", select: "name" })
+          .populate({ path: "designation", select: "name" })
+          .populate({ path: "reportingTo", select: "firstName lastName" })
+          .populate({ path: "createdBy", select: "firstName lastName" }),
+
+        User.countDocuments(filter),
+      ]);
+    } else {
+      // For web, use pagination
+      [users, total] = await Promise.all([
+        User.find(filter)
+          .skip(skip)
+          .limit(limit)
+          .populate({ path: "role", select: "name" })
+          .populate({ path: "department", select: "name" })
+          .populate({ path: "designation", select: "name" })
+          .populate({ path: "reportingTo", select: "firstName lastName" })
+          .populate({ path: "createdBy", select: "firstName lastName" }),
+
+        User.countDocuments(filter),
+      ]);
+    }
+
+    // const usersWithIsRead = users.map((user) => {
+    //   const isRead = user.readBy?.includes(viewerId); // assuming readBy is an array of ObjectIds
+    //   return {
+    //     ...user.toObject(),
+    //     isRead,
+    //   };
+    // });
+    const usersWithoutPasswords = users.map((user) => {
+      const { password, ...rest } = user.toObject();
+      return rest;
+    });
 
     return successResponse(res, "Users fetched successfully", {
-      users,
+      users: usersWithoutPasswords,
       total,
       page,
       totalPages: Math.ceil(total / limit),
@@ -164,63 +312,15 @@ const getAllUsers = async (req, res, next) => {
   }
 };
 
-const getAllManagers = async (req, res, next) => {
-  try {
-    const { search = "" } = req.query;
-
-    // Find roles for Manager and Super Admin
-    const roles = await Role.find(
-      { name: { $in: ["Manager", "Super Admin"] } },
-      "_id"
-    );
-    const roleIds = roles.map((r) => r._id);
-
-    // Base filter for roles
-    let filter = { role: { $in: roleIds }, status: "Active" };
-
-    // If search string provided, add search conditions
-    if (search) {
-      const searchRegex = new RegExp(search, "i");
-      filter.$or = [
-        { firstName: searchRegex },
-        { lastName: searchRegex },
-        { email: searchRegex },
-      ];
-    }
-
-    const managers = await User.find(
-      filter,
-      "firstName lastName _id role"
-    ).populate({ path: "role", select: "name" });
-
-    return successResponse(res, "Managers fetched successfully", managers);
-  } catch (err) {
-    next(err);
-  }
-};
-
 const getAllEmployeesForReporting = async (req, res, next) => {
   try {
-    const { search = "", email } = req.query;
+    const { search = "" } = req.query;
     const searchRegex = new RegExp(search, "i");
-
-    // Find excluded role IDs (Super Admin and HR)
-    const excludedRoles = await Role.find({
-      name: { $in: ["HR"] },
-    });
-
-    const excludedRoleIds = excludedRoles.map((r) => r._id);
 
     // Base filter
     let filter = {
-      role: { $nin: excludedRoleIds },
       status: "Active",
     };
-
-    // Exclude a specific email if provided
-    if (email) {
-      filter.email = { $ne: email };
-    }
 
     // Add search filter if search string is provided
     if (search) {
@@ -234,8 +334,8 @@ const getAllEmployeesForReporting = async (req, res, next) => {
     // Fetch employees
     const employees = await User.find(
       filter,
-      "_id firstName lastName designation"
-    );
+      "_id firstName lastName "
+    ).populate("designation", "name");
 
     return successResponse(res, "Employees fetched successfully", employees);
   } catch (err) {
@@ -248,17 +348,28 @@ const getUserById = async (req, res, next) => {
   try {
     const user = await User.findById(req.params.id)
       .populate("role", "name")
+      .populate("department", "name")
+      .populate("designation", "name")
+      .populate("createdBy", "firstName lastName")
+      .populate("modifiedBy", "firstName lastName")
+
       .populate({
         path: "reportingTo",
-        select: "firstName lastName role",
+        select: "employeeId firstName lastName role",
         populate: {
           path: "role",
           select: "name",
         },
       });
+
     if (!user) throw new CustomError("User not found", 404);
 
-    return successResponse(res, "User fetched successfully", user);
+    const { password, ...userWithoutPassword } = user.toObject();
+    return successResponse(
+      res,
+      "User fetched successfully",
+      userWithoutPassword
+    );
   } catch (err) {
     next(err);
   }
@@ -274,7 +385,7 @@ const deleteUser = async (req, res, next) => {
 
     if (!user) throw new CustomError("User not found", 404);
 
-    return successResponse(res, "User marked as inactive successfully", user);
+    return successResponse(res, "User deleted successfully", user);
   } catch (err) {
     next(err);
   }
@@ -293,7 +404,7 @@ const updateUserStatus = async (req, res, next) => {
 
     if (!user) throw new CustomError("User not found", 404);
 
-    return successResponse(res, "Status updated successfully", user);
+    return successResponse(res, "Status updated successfully", null);
   } catch (err) {
     next(err);
   }
@@ -301,18 +412,9 @@ const updateUserStatus = async (req, res, next) => {
 
 const resetPassword = async (req, res, next) => {
   try {
-    const { email, otp, newPassword, confirmPassword } = req.body;
+    const { email, newPassword, confirmPassword } = req.body;
     const user = await User.findOne({ email });
     if (!user) throw new CustomError("User not found", 404);
-
-    if (
-      !user.otp ||
-      user.otp !== otp ||
-      !user.otpExpires ||
-      user.otpExpires < Date.now()
-    ) {
-      throw new CustomError("Invalid or expired OTP", 400);
-    }
 
     if (newPassword !== confirmPassword) {
       throw new CustomError("Passwords do not match", 400);
@@ -324,8 +426,6 @@ const resetPassword = async (req, res, next) => {
     }
 
     user.password = await bcrypt.hash(newPassword, 10);
-    user.otp = undefined;
-    user.otpExpires = undefined;
     await user.save();
     return successResponse(res, "Password reset successfully");
   } catch (err) {
@@ -383,14 +483,6 @@ const getAllEmployeesByReporterId = async (req, res, next) => {
     // 1. Get reporter with teamMembers
     const reporter = await User.findById(id).select("teamMembers");
 
-    if (
-      !reporter ||
-      !reporter.teamMembers ||
-      reporter.teamMembers.length === 0
-    ) {
-      throw new CustomError("No employees found under this reporter", 404);
-    }
-
     // 2. Build filter with teamMembers list
     let filter = {
       _id: { $in: reporter.teamMembers },
@@ -425,12 +517,19 @@ const getAllEmployeesByReporterId = async (req, res, next) => {
       User.find(filter)
         .skip(skip)
         .limit(parseInt(limit))
-        .populate("role", "name"),
+        .populate("role", "name")
+        .populate("department", "name")
+        .populate("designation", "name"),
+
       User.countDocuments(filter),
     ]);
+    const usersWithoutPasswords = users.map((user) => {
+      const { password, ...rest } = user.toObject();
+      return rest;
+    });
 
     return successResponse(res, "Employees fetched successfully", {
-      users,
+      users: usersWithoutPasswords,
       total,
       page: parseInt(page),
       totalPages: Math.ceil(total / limit),
@@ -484,6 +583,8 @@ const getAllEmployeesByCreatorId = async (req, res, next) => {
         .skip(skip)
         .limit(parseInt(limit))
         .populate("role", "name")
+        .populate("department", "name")
+        .populate("designation", "name")
         .lean(), // <-- this is key!
       User.countDocuments(filter),
     ]);
@@ -505,9 +606,12 @@ const getAllEmployeesByCreatorId = async (req, res, next) => {
         };
       })
     );
+    const enrichedUsersWithoutPasswords = enrichedUsers.map(
+      ({ password, ...rest }) => rest
+    );
 
     return successResponse(res, "Employees fetched successfully", {
-      users: enrichedUsers,
+      users: enrichedUsersWithoutPasswords,
       total,
       page: parseInt(page),
       totalPages: Math.ceil(total / limit),
@@ -519,219 +623,331 @@ const getAllEmployeesByCreatorId = async (req, res, next) => {
 
 const getDashboardStats = async (req, res, next) => {
   try {
-    const role = req.query.role;
+    const { role } = req.query;
     const { id } = req.params;
 
-    if (!role || !["admin", "hr", "manager"].includes(role)) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid or missing role parameter" });
-    }
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    // Date setups
+    const today = new Date();
+    const todayDay = today.getDate();
+    const todayMonth = today.getMonth() + 1;
+    const oneWeekAgo = new Date();
+    oneWeekAgo.setDate(today.getDate() - 7);
 
-    // ----- Admin Dashboard -----
-    if (role === "admin") {
-      const superAdminRole = await Role.findOne({ name: "Super Admin" });
-      const managerRole = await Role.findOne({ name: "Manager" });
+    // Super Admin role
+    const superAdminRole = await Role.findOne({ name: "Super Admin" });
+    const superAdminId = superAdminRole?._id;
 
-      // Total Users excluding Super Admin
-      const totalUsers = await User.countDocuments({
-        role: { $ne: superAdminRole?._id },
-      });
+    // Common filter
+    const activeNonSuperAdminFilter = {
+      status: "Active",
+      role: { $ne: superAdminId },
+    };
 
-      // Managers
-      const totalManagers = await User.countDocuments({
-        role: managerRole?._id,
-      });
+    // New Hires (last 7 days)
+    const newHires = await User.find({
+      ...activeNonSuperAdminFilter,
+      createdAt: { $gte: oneWeekAgo },
+    })
+      .select("firstName lastName email dateOfJoining createdAt")
+      .populate("department", "name")
+      .populate("designation", "name");
 
-      // Users added in current month
-      const usersThisMonth = await User.countDocuments({
-        role: { $ne: superAdminRole?._id },
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-      });
+    // Birthday Users (today)
+    const birthdayUsers = await User.find({
+      ...activeNonSuperAdminFilter,
+      $expr: {
+        $and: [
+          { $eq: [{ $dayOfMonth: "$dob" }, todayDay] },
+          { $eq: [{ $month: "$dob" }, todayMonth] },
+        ],
+      },
+    }).select("firstName lastName email dob");
 
-      // Managers added in current month
-      const managersThisMonth = await User.countDocuments({
-        role: managerRole?._id,
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-      });
-
-      // Points aggregation
-      const pointAgg = await Point.aggregate([
-        {
-          $group: {
-            _id: null,
-            total: { $sum: "$pointChange" },
+    // Work Anniversaries (today)
+    const workAnniversaryUsers = await User.aggregate([
+      {
+        $match: {
+          ...activeNonSuperAdminFilter,
+          $expr: {
+            $and: [
+              { $eq: [{ $dayOfMonth: "$dateOfJoining" }, todayDay] },
+              { $eq: [{ $month: "$dateOfJoining" }, todayMonth] },
+            ],
           },
         },
-      ]);
-      const totalPoints = pointAgg[0]?.total || 0;
+      },
+      {
+        $addFields: {
+          yearsCompleted: {
+            $subtract: [{ $year: new Date() }, { $year: "$dateOfJoining" }],
+          },
+        },
+      },
+      {
+        $project: {
+          firstName: 1,
+          lastName: 1,
+          email: 1,
+          dateOfJoining: 1,
+          yearsCompleted: 1,
+        },
+      },
+    ]);
+    const totalUsers = await User.countDocuments(activeNonSuperAdminFilter);
 
-      // Bonuses this month (pointChange > 0)
-      const bonusesThisMonth = await Point.countDocuments({
-        transactionType: "bonuses",
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth },
+    // ---------- ADMIN DASHBOARD ----------
+    if (role === "Super Admin") {
+      const totalRoles = await Role.countDocuments({
+        _id: { $ne: superAdminId },
       });
+      const totalDepartments = await Department.countDocuments();
+      const admin = await User.findById(id).select("department");
 
-      // Deductions this month
-      const deductionsThisMonth = await Point.countDocuments({
-        transactionType: "deductions",
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-      });
-
-      // Total points transactions (to calculate bonus/deduction %)
-      const totalPointTransactionsThisMonth =
-        bonusesThisMonth + deductionsThisMonth;
-
-      // Pending appraisals total and this month
-      const pendingAppraisals = await Appraisal.countDocuments({
-        adminApprovalStatus: "pending",
-        hrApprovalStatus: "approved",
-      });
-
-      const pendingAppraisalsThisMonth = await Appraisal.countDocuments({
-        adminApprovalStatus: "pending",
-        hrApprovalStatus: "approved",
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-      });
-
-      // Percentages
-      const percentUsersThisMonth =
-        totalUsers > 0 ? Math.round((usersThisMonth / totalUsers) * 100) : 0;
-
-      const percentManagersThisMonth =
-        totalManagers > 0
-          ? Math.round((managersThisMonth / totalManagers) * 100)
-          : 0;
-
-      const percentBonuses =
-        totalPointTransactionsThisMonth > 0
-          ? Math.round(
-              (bonusesThisMonth / totalPointTransactionsThisMonth) * 100
-            )
-          : 0;
-
-      const percentDeductions =
-        totalPointTransactionsThisMonth > 0
-          ? Math.round(
-              (deductionsThisMonth / totalPointTransactionsThisMonth) * 100
-            )
-          : 0;
-
-      const percentPendingAppraisalsThisMonth =
-        pendingAppraisals > 0
-          ? Math.round((pendingAppraisalsThisMonth / pendingAppraisals) * 100)
-          : 0;
+      const departmentEmployees = await User.find({
+        department: admin.department,
+        _id: { $ne: id },
+      }).select("employeeId firstName lastName");
 
       return successResponse(res, "Admin dashboard data", {
         totalUsers,
-        totalManagers,
-        totalPoints,
-        pendingAppraisals,
-        percentUsersThisMonth: `${percentUsersThisMonth}%`,
-        percentManagersThisMonth: `${percentManagersThisMonth}%`,
-        percentBonusesThisMonth: `${percentBonuses}%`,
-        percentDeductionsThisMonth: `${percentDeductions}%`,
-        percentPendingAppraisalsThisMonth: `${percentPendingAppraisalsThisMonth}%`,
+        totalRoles,
+        newHiresCount: newHires.length,
+        newHires,
+        birthdayUsers,
+        workAnniversaryUsers,
+        totalDepartments,
+        departmentEmployees,
       });
     }
 
-    // ----- HR Dashboard -----
-    if (role === "hr") {
-      const superAdminRole = await Role.findOne({ name: "Super Admin" });
+    const user = await User.findById(id).select("totalPoints");
 
-      const hrUserCount = await User.countDocuments({
-        role: { $ne: superAdminRole._id },
-        status: "Active",
-      });
+    const teamMembersCount = await User.countDocuments({
+      ...activeNonSuperAdminFilter,
+      reportingTo: id,
+    });
 
-      const hrUsersThisMonth = await User.countDocuments({
-        role: { $ne: superAdminRole._id },
-        status: "Active",
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-      });
+    return successResponse(res, "HR dashboard data", {
+      totalUsers,
+      teamMembersCount,
+      totalPoints: user?.totalPoints || 0,
+      newHiresCount: newHires.length,
+      newHires,
+      birthdayUsers,
+      workAnniversaryUsers,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+const getAllEmployeesByDepartment = async (req, res, next) => {
+  try {
+    const { id } = req.params; // department id
 
-      const percentHrUsersThisMonth =
-        hrUserCount > 0
-          ? Math.round((hrUsersThisMonth / hrUserCount) * 100)
-          : 0;
-      const hr = await User.findById(id);
+    const employees = await User.find({ department: id }).select(
+      "EmployeeId firstName lastName"
+    );
 
-      // const hrEmployees = await User.find(
-      //   { status: "Active" },
-      //   { $ne: superAdminRole._id },
-      //   { _id: 1 }
-      // );
-      // const employeeIds = hrEmployees.map((emp) => emp._id);
+    return successResponse(res, "Employees fetched successfully", employees);
+  } catch (err) {
+    next(err);
+  }
+};
 
-      // const hrPointsAgg = await Point.aggregate([
-      //   { $match: { employeeId: { $in: employeeIds } } },
-      //   { $group: { _id: null, total: { $sum: "$pointChange" } } },
-      // ]);
-      // const hrTotalPoints = hrPointsAgg[0]?.total || 0;
+const updatePhoneNumber = async (req, res, next) => {
+  try {
+    const { phoneNumber } = req.body;
+    const { id } = req.params;
 
-      return successResponse(res, "HR dashboard data", {
-        totalUsers: hrUserCount,
-        usersThisMonthPercentage: percentHrUsersThisMonth,
-        totalPoints: hr.totalPoints,
-      });
+    if (!phoneNumber) throw new CustomError("Phone number is required", 400);
+
+    const updatedUser = await User.findByIdAndUpdate(
+      id,
+      { phoneNumber },
+      { new: true }
+    );
+
+    if (!updatedUser) throw new CustomError("User not found", 404);
+
+    return successResponse(
+      res,
+      "Phone number updated successfully",
+      updatedUser
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
+const updateRole = async (req, res, next) => {
+  try {
+    const { role } = req.body;
+    const { id } = req.params;
+
+    if (!role) throw new CustomError("role is required", 400);
+
+    const updatedUser = await User.findByIdAndUpdate(
+      id,
+      { role },
+      { new: true }
+    );
+
+    if (!updatedUser) throw new CustomError("User not found", 404);
+
+    return successResponse(res, "Role updated successfully", updatedUser);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// const markAllUsersAsSeen = async (req, res, next) => {
+//   try {
+//     const viewerId = req.params.id; // user ID who is viewing
+
+//     if (!viewerId) {
+//       throw new CustomError("User ID is required", 400);
+//     }
+
+//     // Update all users not created by the viewer and where viewer hasn't read yet
+//     const result = await User.updateMany(
+//       {
+//         createdBy: { $ne: viewerId },
+//         seenBy: { $nin: [viewerId] }, // ✅ Correct way to filter array field
+//       },
+//       {
+//         $addToSet: { seenBy: viewerId }, // ✅ Avoid duplicates
+//       }
+//     );
+
+//     return successResponse(
+//       res,
+//       `Marked ${result.modifiedCount} users as seen by viewer`,
+//       result
+//     );
+//   } catch (err) {
+//     next(err);
+//   }
+// };
+
+// const markUserAsReadByViewer = async (req, res, next) => {
+//   try {
+//     const { viewerId, userId } = req.body;
+
+//     if (!viewerId || !userId) {
+//       throw new CustomError("viewerId and userId are required", 400);
+//     }
+
+//     const user = await User.findById(userId);
+
+//     if (!user) {
+//       throw new CustomError("User not found", 404);
+//     }
+
+//     // Only update if viewerId is not already in readBy
+//     if (!user.readBy?.includes(viewerId)) {
+//       user.readBy = [...(user.readBy || []), viewerId];
+//       await user.save();
+//     }
+
+//     return successResponse(res, "User marked as read by viewer", user);
+//   } catch (err) {
+//     next(err);
+//   }
+// };
+
+const getUserTree = async (req, res, next) => {
+  try {
+    console.log("here");
+    const userId = "684a757980c56bf96d63bf31";
+    // const objectId = mongoose.Types.ObjectId(userId);
+
+    if (!userId) {
+      throw new CustomError("User ID is required", 400);
     }
 
-    // ----- Manager Dashboard -----
-    if (role === "manager") {
-      // Total users managed by this manager
-      const managerUserCount = await User.countDocuments({ managedBy: id });
+    // Recursive function to build the team hierarchy
+    const buildTree = async (id) => {
+      const user = await User.findById(id)
+        .select("_id firstName lastName reportingTo")
+        .populate("designation", "name");
 
-      const managerUsersThisMonth = await User.countDocuments({
-        managedBy: id,
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-      });
+      if (!user) return null;
 
-      const percentManagerUsersThisMonth =
-        managerUserCount > 0
-          ? Math.round((managerUsersThisMonth / managerUserCount) * 100)
-          : 0;
+      const teamMembers = await User.find({ reportingTo: id }).select(
+        "_id firstName lastName email"
+      );
 
-      const managedEmployees = await User.find({ managedBy: id }, { _id: 1 });
-      const managedEmployeeIds = managedEmployees.map((user) => user._id);
-      // Pending appraisals
-      const pendingAppraisals = await Appraisal.countDocuments({
-        employeeId: { $in: managedEmployeeIds },
-        managerApprovalStatus: "pending",
-        employeeApprovalStatus: "approved",
-      });
+      const team = await Promise.all(
+        teamMembers.map((member) => buildTree(member._id))
+      );
 
-      const managerPendingAppraisalsThisMonth = await Appraisal.countDocuments({
-        createdBy: id,
-        adminApprovalStatus: "pending",
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-      });
+      return {
+        ...user.toObject(),
+        team,
+      };
+    };
 
-      const percentPendingManagerAppraisalsThisMonth =
-        pendingAppraisals > 0
-          ? Math.round(
-              (managerPendingAppraisalsThisMonth / pendingAppraisals) * 100
-            )
-          : 0;
+    const tree = await buildTree(userId);
 
-      // Total points earned by this manager
-      const managerPointsAgg = await Point.aggregate([
-        { $match: { employeeId: id } },
-        { $group: { _id: null, total: { $sum: "$pointChange" } } },
-      ]);
-      const totalPoints = managerPointsAgg[0]?.total || 0;
+    if (!tree) throw new CustomError("User not found", 404);
 
-      return successResponse(res, "Manager dashboard data", {
-        totalUsers: managerUserCount,
-        usersThisMonthPercentage: percentManagerUsersThisMonth,
-        pendingAppraisals: pendingAppraisals,
-        pendingAppraisalsThisMonthPercentage:
-          percentPendingManagerAppraisalsThisMonth,
-        totalPoints: totalPoints, // as requested, just value — no percentage
-      });
+    return res
+      .status(200)
+      .json({ message: "Organization tree fetched", data: tree });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const getUsersGroupedByDepartment = async (req, res, next) => {
+  try {
+    // Step 1: Get all departments
+    const departments = await Department.find({}, "_id name");
+
+    // Step 2: For each department, get users
+    const result = await Promise.all(
+      departments.map(async (dept) => {
+        const users = await User.find({ department: dept._id })
+          .select("_id firstName lastName email role")
+          .populate("role", "name");
+
+        return {
+          _id: dept._id,
+          name: dept.name,
+          users,
+        };
+      })
+    );
+
+    return successResponse(res, "Users grouped by department", result);
+  } catch (err) {
+    next(err);
+  }
+};
+
+const getTeamMembersByUserId = async (req, res, next) => {
+  try {
+    const { id } = req.params; // The manager/user ID
+
+    // Find the user and get their teamMembers array
+    const user = await User.findById(id).select("teamMembers");
+    if (!user || !user.teamMembers || user.teamMembers.length === 0) {
+      return successResponse(res, "No team members found", []);
     }
+
+    // Fetch all users whose _id is in the teamMembers array
+    const teamMembers = await User.find({ _id: { $in: user.teamMembers } })
+      .populate("role", "name")
+      .populate("department", "name")
+      .populate("designation", "name")
+      .populate("reportingTo", "firstName lastName")
+      .populate("createdBy", "firstName lastName");
+
+    return successResponse(
+      res,
+      "Team members fetched successfully",
+      {users:teamMembers}
+    );
   } catch (err) {
     next(err);
   }
@@ -742,12 +958,18 @@ module.exports = {
   getAllUsers,
   getUserById,
   deleteUser,
+  updateUserField,
   updateUserStatus,
   getAllEmployeesByReporterId,
   getAllEmployeesByCreatorId,
   resetPassword,
   updatePassword,
-  getAllManagers,
+  updateRole,
   getAllEmployeesForReporting,
   getDashboardStats,
+  updatePhoneNumber,
+  getAllEmployeesByDepartment,
+  getUserTree,
+  getUsersGroupedByDepartment,
+  getTeamMembersByUserId,
 };

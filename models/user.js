@@ -32,11 +32,17 @@ const UserSchema = new mongoose.Schema(
     },
 
     department: {
-      type: String,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Department",
     },
 
     designation: {
-      type: String,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Designation",
+    },
+
+    dob: {
+      type: Date,
     },
 
     dateOfJoining: {
@@ -52,22 +58,39 @@ const UserSchema = new mongoose.Schema(
       enum: ["Active", "Inactive", "Suspended"],
       default: "Active",
     },
+
     address: {
       type: String,
     },
+    city: {
+      type: String,
+    },
+    province: {
+      type: String,
+    },
+    postalCode: {
+      type: String,
+    },
+    country: {
+      type: String,
+    },
+
     role: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Role",
       required: true,
       default: new Types.ObjectId("683157fd55615f6712603b64"), // use 'new'
     },
+
     profilePhotoUrl: {
       type: String,
     },
+
     totalPoints: {
       type: Number,
       default: 0,
     },
+
     reportingTo: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -78,13 +101,36 @@ const UserSchema = new mongoose.Schema(
       ref: "User", // Admin who created this employee
     },
 
+    modifiedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User", // Admin who created this employee
+    },
+
+    modifiedTime: {
+      type: Date,
+    },
+
     teamMembers: {
       type: Array,
     },
 
+    // seenBy: [
+    //   {
+    //     type: mongoose.Schema.Types.ObjectId,
+    //     ref: "User", // HR user ID
+    //   },
+    // ],
+    // readBy: [
+    //   {
+    //     type: mongoose.Schema.Types.ObjectId,
+    //     ref: "User",
+    //   },
+    // ],
+
     otp: {
       type: String,
     },
+
     otpExpires: {
       type: Date,
     },

@@ -5,19 +5,18 @@ const {
   getPointById,
   getAllPointsByEmployeeId,
   deletePoint,
-  sortPoints,
-  filterPoints,
-  getAllPointsByCreator,
+  // getAllPointsByCreator,
+  getEmployeeLatestPoints,
 } = require("../services/pointService");
 
 router.post("/", createOrUpdatePoint);
 router.post("/:id", createOrUpdatePoint);
-router.get("/sort", sortPoints);
-router.get("/filter", filterPoints);
 router.get("/", getAllPoints);
 router.get("/:id", getPointById);
-router.get("/creator/:id", getAllPointsByCreator);
+// router.get("/creator/:id", getAllPointsByCreator);
 router.get("/employee/:id", getAllPointsByEmployeeId);
+router.get("/employee/:id/latest", getEmployeeLatestPoints);
+
 router.delete("/:id", deletePoint);
 
 module.exports = router;

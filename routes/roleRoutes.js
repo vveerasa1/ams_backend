@@ -1,11 +1,16 @@
 const router = require("express").Router();
-const { addRole, editRole, deleteRole, getAllRoles, getFilteredRoles } = require("../services/roleService");
+const {
+  upsertRole,
+  deleteRole,
+  getAllRoles,
+  getFilteredRoles,
+  getRoleById,
+} = require("../services/roleService");
 
-router.post("/", addRole);
+router.post("/", upsertRole);
 router.get("/", getAllRoles);
 router.get("/filter", getFilteredRoles);
-router.put("/:id", editRole);
+router.get("/:id", getRoleById);
 router.delete("/:id", deleteRole);
-
 
 module.exports = router;
