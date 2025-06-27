@@ -35,7 +35,7 @@ const upsertDesignation = async (req, res, next) => {
     );
   } catch (err) {
     if (err.code === 11000) {
-      return res.status(409).json({ error: "Name already exists" });
+      return res.status(409).json({ error: "Designation name already exists" });
     }
     next(err);
   }
@@ -69,7 +69,14 @@ const deleteDesignation = async (req, res, next) => {
 
 const getAllDesignations = async (req, res, next) => {
   try {
-    const designations = await Designation.find()
+    const { search } = req.query;
+
+    let filter = {};
+    if (search) {
+      filter.name = { $regex: search, $options: "i" };
+    }
+
+    const designations = await Designation.find(filter)
       .sort({ name: 1 })
       .populate({ path: "addedBy", select: "firstName lastName" })
       .populate({ path: "modifiedBy", select: "firstName lastName" });

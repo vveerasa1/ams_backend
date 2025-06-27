@@ -65,7 +65,7 @@ const upsertDepartment = async (req, res, next) => {
     );
   } catch (err) {
     if (err.code === 11000) {
-      throw new CustomError("Name already exists", 409);
+      throw new CustomError("Department name already exists", 409);
     }
     next(err);
   }
@@ -96,7 +96,26 @@ const deleteDepartment = async (req, res, next) => {
 
 const getAllDepartments = async (req, res, next) => {
   try {
-    const departments = await Department.find()
+    const { search } = req.query;
+    let filter = {};
+
+    if (search) {
+      const searchRegex = new RegExp(search, "i");
+
+      // Find matching users for departmentLead
+      const matchingLeads = await User.find({
+        $or: [{ firstName: searchRegex }, { lastName: searchRegex }],
+      }).select("_id");
+
+      const leadIds = matchingLeads.map((u) => u._id);
+
+      filter.$or = [
+        { name: { $regex: searchRegex } },
+        { departmentLead: { $in: leadIds } },
+      ];
+    }
+
+    let departments = await Department.find(filter)
       .sort({ name: 1 })
       .populate({ path: "departmentLead", select: "firstName lastName" })
       .populate({ path: "parentDepartment", select: "name" })

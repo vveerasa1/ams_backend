@@ -24,6 +24,13 @@ const PointsSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    modifiedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    modifiedTime: {
+      type: Date,
+    },
 
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,

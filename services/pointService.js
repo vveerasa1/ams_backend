@@ -131,9 +131,14 @@ const getAllPoints = async (req, res, next) => {
     }
 
     if (pointsRange) {
-      const [min, max] = pointsRange.split("-").map(Number);
-      if (!isNaN(min) && !isNaN(max)) {
-        employeeFilter.pointsChange = { $gte: min, $lte: max };
+      // This regex will match two numbers, including negative ones
+      const match = pointsRange.match(/(-?\d+)\s*-\s*(-?\d+)/);
+      if (match) {
+        const min = Number(match[1]);
+        const max = Number(match[2]);
+        if (!isNaN(min) && !isNaN(max)) {
+          employeeFilter.pointsChange = { $gte: min, $lte: max };
+        }
       }
     }
     if (dateRange) {
@@ -148,9 +153,9 @@ const getAllPoints = async (req, res, next) => {
         };
       }
     }
-    let sortOptions = { createdAt: 1 }; // Default: descending by date
+    let sortOptions = { updatedAt: -1 }; // Default: descending by date
     if (sortBy === "date") {
-      sortOptions = { createdAt: -1 }; // Ascending by date
+      sortOptions = { updatedAt: 1 }; // Ascending by date
     } else if (sortBy === "points") {
       sortOptions = { pointsChange: -1 }; // Descending by points
     }

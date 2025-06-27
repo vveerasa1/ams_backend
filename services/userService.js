@@ -16,8 +16,8 @@ const createOrUpdateUser = async (req, res, next) => {
   try {
     const details = req.body.user;
     const data = JSON.parse(details);
-    const updatingUserId = data.id; // The employee being updated (from body)
-    const modifierId = data.modifierId; // The user performing the update (from path variable)
+    const updatingUserId = data.id;
+    const modifierId = data.modifierId;
     const isUpdate = !!updatingUserId;
 
     const superAdminRole = await Role.findOne({ name: "Super Admin" });
@@ -209,10 +209,7 @@ const getAllUsers = async (req, res, next) => {
 
     // Find the Super Admin role id
     // const superAdminRole = await Role.findOne({ name: "Super Admin" });
-    let filter = {
-      status: "Active", // ✅ Only fetch users with active status
-      // _id: { $ne: viewerId }, // ✅ Exclude the current user from the results
-    };
+    let filter = {};
 
     if (totalPointsRange) {
       if (!isNaN(min) && !isNaN(max)) {
@@ -227,6 +224,7 @@ const getAllUsers = async (req, res, next) => {
         { firstName: searchRegex },
         { lastName: searchRegex },
         { email: searchRegex },
+        { employeeId: searchRegex },
       ];
     }
 
@@ -269,7 +267,8 @@ const getAllUsers = async (req, res, next) => {
           .populate({ path: "department", select: "name" })
           .populate({ path: "designation", select: "name" })
           .populate({ path: "reportingTo", select: "firstName lastName" })
-          .populate({ path: "createdBy", select: "firstName lastName" }),
+          .populate({ path: "createdBy", select: "firstName lastName" })
+          .populate({ path: "modifiedBy", select: "firstName lastName" }),
 
         User.countDocuments(filter),
       ]);
@@ -413,6 +412,7 @@ const updateUserStatus = async (req, res, next) => {
 const resetPassword = async (req, res, next) => {
   try {
     const { email, newPassword, confirmPassword } = req.body;
+
     const user = await User.findOne({ email });
     if (!user) throw new CustomError("User not found", 404);
 
@@ -909,7 +909,7 @@ const getUsersGroupedByDepartment = async (req, res, next) => {
       departments.map(async (dept) => {
         const users = await User.find({ department: dept._id })
           .select("_id firstName lastName email role")
-          .populate("role", "name");
+          .populate("designation", "name");
 
         return {
           _id: dept._id,
@@ -943,11 +943,9 @@ const getTeamMembersByUserId = async (req, res, next) => {
       .populate("reportingTo", "firstName lastName")
       .populate("createdBy", "firstName lastName");
 
-    return successResponse(
-      res,
-      "Team members fetched successfully",
-      {users:teamMembers}
-    );
+    return successResponse(res, "Team members fetched successfully", {
+      users: teamMembers,
+    });
   } catch (err) {
     next(err);
   }

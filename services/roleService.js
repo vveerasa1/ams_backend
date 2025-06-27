@@ -52,7 +52,18 @@ const deleteRole = async (req, res, next) => {
 
 const getAllRoles = async (req, res, next) => {
   try {
-    const roles = await Role.find({ name: { $ne: "Super Admin" } });
+    const { search } = req.query;
+
+    // Build filter
+    let filter = {
+      $and: [{ name: { $ne: "Super Admin" } }],
+    };
+    if (search) {
+      filter.$and.push({ name: { $regex: search, $options: "i" } });
+    }
+
+    const roles = await Role.find(filter);
+
     return successResponse(res, "Roles fetched successfully", roles);
   } catch (err) {
     next(err);
