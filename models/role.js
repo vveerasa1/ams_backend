@@ -8,17 +8,26 @@ const RoleSchema = new mongoose.Schema(
       unique: true,
       trim: true,
     },
+
     permissions: [
       {
         type: String,
         required: true,
-      }
+      },
     ],
+
     description: {
       type: String,
       trim: true,
     },
+
+    status: {
+      type: String,
+      enum: ["Active", "Inactive", "Suspended"],
+      default: "Active",
+    },
   },
+
   {
     timestamps: true,
   }

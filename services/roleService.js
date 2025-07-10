@@ -6,13 +6,22 @@ const { successResponse } = require("../utils/responseHandler");
 
 const upsertRole = async (req, res, next) => {
   try {
-    const { id, name, permissions, description } = req.body;
+    const { id, name, permissions, description, status } = req.body;
     let role;
     if (id) {
+      if (status === "Inactive") {
+        const usersInRole = await User.findOne({ role: id });
+        if (usersInRole) {
+          throw new CustomError(
+            "Cannot update status: Users exist in this Role",
+            400
+          );
+        }
+      }
       // Update
       role = await Role.findByIdAndUpdate(
         id,
-        { name, permissions, description },
+        { name, permissions, description, status },
         { new: true }
       );
       if (!role) throw new CustomError("Role not found", 404);
@@ -33,7 +42,7 @@ const deleteRole = async (req, res, next) => {
     const { id } = req.params;
 
     // Check if any user has this role
-    const userWithRole = await User.findOne({ role: id });
+    const userWithRole = await User.findOne({ role: id, isDeleted: false });
     if (userWithRole) {
       throw new CustomError(
         "Role cannot be deleted because users are assigned to it.",

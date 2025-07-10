@@ -134,9 +134,13 @@ const UserSchema = new mongoose.Schema(
     otpExpires: {
       type: Date,
     },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
-    timestamps: true, // adds createdAt & updatedAt automatically
+    timestamps: true,
   }
 );
 

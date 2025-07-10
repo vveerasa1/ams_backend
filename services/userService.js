@@ -9,8 +9,7 @@ const { s3Uploads, deleteFromS3 } = require("../utils/s3Uploads.js");
 const nodemailer = require("nodemailer");
 const AppraisalTemplate = require("../models/appraisalTemplate.js");
 const Department = require("../models/department.js");
-
-require("dotenv").config();
+const config = require("../config");
 
 const createOrUpdateUser = async (req, res, next) => {
   try {
@@ -83,13 +82,13 @@ const createOrUpdateUser = async (req, res, next) => {
       const transporter = nodemailer.createTransport({
         service: "gmail",
         auth: {
-          user: process.env.EMAIL,
-          pass: process.env.PASSWORD,
+          user: config.smtp.email,
+          pass: config.smtp.password,
         },
       });
 
       await transporter.sendMail({
-        from: process.env.EMAIL,
+        from: config.smtp.email,
         to: data.email,
         subject: "Employee Account Created",
         html: `<p>Dear ${data.firstName},<br/>
@@ -193,7 +192,10 @@ const updateUserField = async (req, res, next) => {
 
 const getAllUsers = async (req, res, next) => {
   try {
-    const page = parseInt(req.query.pageIndex) || 1;
+    const page =
+      parseInt(req.query.pageIndex) >= 0
+        ? parseInt(req.query.pageIndex) + 1
+        : 1;
     const limit = parseInt(req.query.pageSize) || 10;
     const skip = (page - 1) * limit;
 
@@ -209,7 +211,7 @@ const getAllUsers = async (req, res, next) => {
 
     // Find the Super Admin role id
     // const superAdminRole = await Role.findOne({ name: "Super Admin" });
-    let filter = {};
+    let filter = { isDeleted: false };
 
     if (totalPointsRange) {
       if (!isNaN(min) && !isNaN(max)) {
@@ -282,7 +284,8 @@ const getAllUsers = async (req, res, next) => {
           .populate({ path: "department", select: "name" })
           .populate({ path: "designation", select: "name" })
           .populate({ path: "reportingTo", select: "firstName lastName" })
-          .populate({ path: "createdBy", select: "firstName lastName" }),
+          .populate({ path: "createdBy", select: "firstName lastName" })
+          .populate({ path: "modifiedBy", select: "firstName lastName" }),
 
         User.countDocuments(filter),
       ]);
@@ -314,11 +317,13 @@ const getAllUsers = async (req, res, next) => {
 const getAllEmployeesForReporting = async (req, res, next) => {
   try {
     const { search = "" } = req.query;
+    const { id } = req.params;
     const searchRegex = new RegExp(search, "i");
 
     // Base filter
     let filter = {
       status: "Active",
+      isDeleted: false,
     };
 
     // Add search filter if search string is provided
@@ -338,7 +343,55 @@ const getAllEmployeesForReporting = async (req, res, next) => {
 
     return successResponse(res, "Employees fetched successfully", employees);
   } catch (err) {
-    console.log(err);
+    next(err);
+  }
+};
+
+const getAllEmployeesForAppraisal = async (req, res, next) => {
+  try {
+    const { search = "" } = req.query;
+    const { id } = req.params;
+    const searchRegex = new RegExp(search, "i");
+
+    const superAdminRole = await Role.findOne({ name: "Super Admin" });
+    const superAdminId = superAdminRole?._id?.toString();
+
+    let filter = {
+      status: "Active",
+      isDeleted: false,
+      role: { $ne: superAdminId },
+      _id: { $ne: id },
+    };
+
+    if (search) {
+      filter.$or = [
+        { firstName: searchRegex },
+        { lastName: searchRegex },
+        { email: searchRegex },
+      ];
+    }
+    let users, total;
+
+    [users, total] = await Promise.all([
+      User.find(filter)
+        .populate({ path: "role", select: "name" })
+        .populate({ path: "department", select: "name" })
+        .populate({ path: "designation", select: "name" })
+        .populate({ path: "reportingTo", select: "firstName lastName" })
+        .populate({ path: "createdBy", select: "firstName lastName" })
+        .populate({ path: "modifiedBy", select: "firstName lastName" }),
+
+      User.countDocuments(filter),
+    ]);
+
+    const usersWithoutPasswords = users.map((user) => {
+      const { password, ...rest } = user.toObject();
+      return rest;
+    });
+    return successResponse(res, "Employees fetched successfully", {
+      users: usersWithoutPasswords,
+    });
+  } catch (err) {
     next(err);
   }
 };
@@ -376,13 +429,45 @@ const getUserById = async (req, res, next) => {
 
 const deleteUser = async (req, res, next) => {
   try {
+    const userIdToDelete = req.params.id;
+
+    // Step 1: Soft delete the user
     const user = await User.findByIdAndUpdate(
-      req.params.id,
-      { status: "Inactive" },
+      userIdToDelete,
+      { isDeleted: true },
       { new: true }
     );
 
     if (!user) throw new CustomError("User not found", 404);
+    const superAdminRole = await Role.findOne({ name: "Super Admin" });
+
+    // Step 2: Find Super Admin
+    const superAdmin = await User.findOne({ role: superAdminRole._id });
+    if (!superAdmin) throw new CustomError("Super admin not found", 404);
+
+    const teamMembersToMove = user.teamMembers || [];
+
+    // Step 3: Add deleted user's teamMembers to superAdmin (avoid duplicates)
+    superAdmin.teamMembers = Array.from(
+      new Set([
+        ...(superAdmin.teamMembers || []),
+        ...teamMembersToMove.map((id) => id.toString()),
+      ])
+    );
+    await superAdmin.save();
+
+    // Step 4: Update each moved team member's reportingTo to superAdmin
+    await User.updateMany(
+      { _id: { $in: teamMembersToMove } },
+      { $set: { reportingTo: superAdmin._id } }
+    );
+
+    // Step 5: Remove deleted user from their own reporting user's teamMembers
+    if (user.reportingTo) {
+      await User.findByIdAndUpdate(user.reportingTo, {
+        $pull: { teamMembers: user._id },
+      });
+    }
 
     return successResponse(res, "User deleted successfully", user);
   } catch (err) {
@@ -487,6 +572,7 @@ const getAllEmployeesByReporterId = async (req, res, next) => {
     let filter = {
       _id: { $in: reporter.teamMembers },
       status: "Active",
+      isDeleted: false,
     };
 
     // 3. Add search filter
@@ -554,6 +640,7 @@ const getAllEmployeesByCreatorId = async (req, res, next) => {
     let filter = {
       createdBy: id,
       status: "Active",
+      isdeleted: false,
     };
     // Search filter
     if (search) {
@@ -640,6 +727,7 @@ const getDashboardStats = async (req, res, next) => {
     // Common filter
     const activeNonSuperAdminFilter = {
       status: "Active",
+      isDeleted: false,
       role: { $ne: superAdminId },
     };
 
@@ -648,6 +736,7 @@ const getDashboardStats = async (req, res, next) => {
       ...activeNonSuperAdminFilter,
       createdAt: { $gte: oneWeekAgo },
     })
+      .sort({ createdAt: -1 })
       .select("firstName lastName email dateOfJoining createdAt")
       .populate("department", "name")
       .populate("designation", "name");
@@ -672,6 +761,7 @@ const getDashboardStats = async (req, res, next) => {
             $and: [
               { $eq: [{ $dayOfMonth: "$dateOfJoining" }, todayDay] },
               { $eq: [{ $month: "$dateOfJoining" }, todayMonth] },
+              { $lt: [{ $year: "$dateOfJoining" }, new Date().getFullYear()] }, // exclude users joining this year
             ],
           },
         },
@@ -679,7 +769,7 @@ const getDashboardStats = async (req, res, next) => {
       {
         $addFields: {
           yearsCompleted: {
-            $subtract: [{ $year: new Date() }, { $year: "$dateOfJoining" }],
+            $subtract: [new Date().getFullYear(), { $year: "$dateOfJoining" }],
           },
         },
       },
@@ -693,6 +783,7 @@ const getDashboardStats = async (req, res, next) => {
         },
       },
     ]);
+
     const totalUsers = await User.countDocuments(activeNonSuperAdminFilter);
 
     // ---------- ADMIN DASHBOARD ----------
@@ -705,6 +796,7 @@ const getDashboardStats = async (req, res, next) => {
 
       const departmentEmployees = await User.find({
         department: admin.department,
+        isDeleted: false,
         _id: { $ne: id },
       }).select("employeeId firstName lastName");
 
@@ -720,16 +812,23 @@ const getDashboardStats = async (req, res, next) => {
       });
     }
 
-    const user = await User.findById(id).select("totalPoints");
+    const user = await User.findById(id).select("totalPoints teamMembers");
 
     const teamMembersCount = await User.countDocuments({
       ...activeNonSuperAdminFilter,
       reportingTo: id,
     });
 
+    const teamMembers = await User.find({
+      _id: { $in: user.teamMembers },
+      status: "Active",
+      isDeleted: false,
+    }).select("employeeId firstName lastName");
+
     return successResponse(res, "HR dashboard data", {
       totalUsers,
       teamMembersCount,
+      teamMembers,
       totalPoints: user?.totalPoints || 0,
       newHiresCount: newHires.length,
       newHires,
@@ -744,9 +843,10 @@ const getAllEmployeesByDepartment = async (req, res, next) => {
   try {
     const { id } = req.params; // department id
 
-    const employees = await User.find({ department: id }).select(
-      "EmployeeId firstName lastName"
-    );
+    const employees = await User.find({
+      department: id,
+      isDeleted: false,
+    }).select("EmployeeId firstName lastName");
 
     return successResponse(res, "Employees fetched successfully", employees);
   } catch (err) {
@@ -761,19 +861,26 @@ const updatePhoneNumber = async (req, res, next) => {
 
     if (!phoneNumber) throw new CustomError("Phone number is required", 400);
 
-    const updatedUser = await User.findByIdAndUpdate(
-      id,
-      { phoneNumber },
-      { new: true }
-    );
-
+    const updatedUser = await User.findById(id);
     if (!updatedUser) throw new CustomError("User not found", 404);
 
-    return successResponse(
-      res,
-      "Phone number updated successfully",
-      updatedUser
-    );
+    // Handle profile photo update
+    if (req.file) {
+      const oldUrl = updatedUser.profilePhotoUrl;
+      if (oldUrl?.includes(".com/")) {
+        const oldKey = oldUrl.split(".com/")[1];
+        await deleteFromS3(oldKey);
+      }
+
+      const location = await s3Uploads(req.file, "profile-photo");
+      updatedUser.profilePhotoUrl = location;
+    }
+
+    updatedUser.phoneNumber = phoneNumber;
+
+    await updatedUser.save();
+
+    return successResponse(res, "Profile updated successfully", updatedUser);
   } catch (err) {
     next(err);
   }
@@ -857,9 +964,10 @@ const updateRole = async (req, res, next) => {
 
 const getUserTree = async (req, res, next) => {
   try {
-    console.log("here");
-    const userId = "684a757980c56bf96d63bf31";
-    // const objectId = mongoose.Types.ObjectId(userId);
+    const superAdminRole = await Role.findOne({ name: "Super Admin" });
+    const superAdmin = await User.findOne({ role: superAdminRole._id });
+    const userId = superAdmin?._id;
+    console.log(userId);
 
     if (!userId) {
       throw new CustomError("User ID is required", 400);
@@ -873,9 +981,10 @@ const getUserTree = async (req, res, next) => {
 
       if (!user) return null;
 
-      const teamMembers = await User.find({ reportingTo: id }).select(
-        "_id firstName lastName email"
-      );
+      const teamMembers = await User.find({
+        reportingTo: id,
+        isDeleted: false,
+      }).select("_id firstName lastName email");
 
       const team = await Promise.all(
         teamMembers.map((member) => buildTree(member._id))
@@ -891,9 +1000,7 @@ const getUserTree = async (req, res, next) => {
 
     if (!tree) throw new CustomError("User not found", 404);
 
-    return res
-      .status(200)
-      .json({ message: "Organization tree fetched", data: tree });
+    return successResponse(res, "Organization tree fetched", tree);
   } catch (err) {
     next(err);
   }
@@ -907,8 +1014,11 @@ const getUsersGroupedByDepartment = async (req, res, next) => {
     // Step 2: For each department, get users
     const result = await Promise.all(
       departments.map(async (dept) => {
-        const users = await User.find({ department: dept._id })
-          .select("_id firstName lastName email role")
+        const users = await User.find({
+          department: dept._id,
+          isDeleted: false,
+        })
+          .select("_id firstName lastName email profilePhoto")
           .populate("designation", "name");
 
         return {
@@ -927,7 +1037,8 @@ const getUsersGroupedByDepartment = async (req, res, next) => {
 
 const getTeamMembersByUserId = async (req, res, next) => {
   try {
-    const { id } = req.params; // The manager/user ID
+    const { id } = req.params;
+    const { search = "", department, designation } = req.query;
 
     // Find the user and get their teamMembers array
     const user = await User.findById(id).select("teamMembers");
@@ -935,17 +1046,53 @@ const getTeamMembersByUserId = async (req, res, next) => {
       return successResponse(res, "No team members found", []);
     }
 
-    // Fetch all users whose _id is in the teamMembers array
-    const teamMembers = await User.find({ _id: { $in: user.teamMembers } })
+    // Build filter to search only within teamMembers
+    let filter = { _id: { $in: user.teamMembers }, isDeleted: false };
+
+    if (search) {
+      const searchRegex = new RegExp(search, "i");
+      filter.$or = [
+        { firstName: searchRegex },
+        { lastName: searchRegex },
+        { email: searchRegex },
+        { employeeId: searchRegex },
+      ];
+    }
+    if (designation) {
+      filter.designation = designation;
+    }
+    if (department) {
+      filter.department = department;
+    }
+
+    // Fetch team members with search filter applied
+    const teamMembers = await User.find(filter)
       .populate("role", "name")
       .populate("department", "name")
       .populate("designation", "name")
       .populate("reportingTo", "firstName lastName")
-      .populate("createdBy", "firstName lastName");
+      .populate("createdBy", "firstName lastName")
+      .populate("modifiedBy", "firstName lastName");
 
     return successResponse(res, "Team members fetched successfully", {
       users: teamMembers,
     });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const getPermissions = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const user = await User.findById(id);
+    const role = await Role.findById(user.role);
+    const permissions = role.permissions;
+    return successResponse(
+      res,
+      "Permissions fetched successfully",
+      permissions
+    );
   } catch (err) {
     next(err);
   }
@@ -960,6 +1107,7 @@ module.exports = {
   updateUserStatus,
   getAllEmployeesByReporterId,
   getAllEmployeesByCreatorId,
+  getAllEmployeesForAppraisal,
   resetPassword,
   updatePassword,
   updateRole,
@@ -970,4 +1118,5 @@ module.exports = {
   getUserTree,
   getUsersGroupedByDepartment,
   getTeamMembersByUserId,
+  getPermissions,
 };

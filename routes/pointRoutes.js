@@ -10,7 +10,6 @@ const {
 } = require("../services/pointService");
 
 router.post("/", createOrUpdatePoint);
-router.post("/:id", createOrUpdatePoint);
 router.get("/", getAllPoints);
 router.get("/:id", getPointById);
 // router.get("/creator/:id", getAllPointsByCreator);

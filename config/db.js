@@ -1,10 +1,9 @@
 const mongoose = require("mongoose");
-const dotenv = require("dotenv");
+const config = require("../config");
 
-dotenv.config();
 // Replace with your MongoDB connection string
 const DB_URI =
-  `${process.env.MONGO_DB_URL}${process.env.DB_NAME}` ||
+  `${config.mongoDb.url}${config.mongoDb.dbName}` ||
   `mongodb://localhost:27017/`;
 
 const connectDB = async () => {

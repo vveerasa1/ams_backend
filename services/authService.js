@@ -4,10 +4,9 @@ const CustomError = require("../utils/customError.js");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 const nodemailer = require("nodemailer");
-require("dotenv").config();
-
-const accessTokenSecretKey = process.env.ACCESS_TOKEN_SECRET;
-const accessTokenExpireIn = process.env.ACCESS_TOKEN_EXPIRES_IN;
+const config = require("../config.js");
+const accessTokenSecretKey = config.jwt.AccessTokenSecretKey;
+const accessTokenExpireIn = config.jwt.AccessTokenExpiresIn;
 
 const login = async (req, res, next) => {
   try {
@@ -16,10 +15,11 @@ const login = async (req, res, next) => {
     if (!email || !password) {
       throw new CustomError("Email and password are required", 400);
     }
-    const user = await User.findOne({ email, status: "Active" }).populate(
-      "role",
-      "name"
-    );
+    const user = await User.findOne({
+      email,
+      status: "Active",
+      isDeleted: false,
+    }).populate("role", "name");
     let role = user?.role.name;
 
     if (!user) {
@@ -66,13 +66,13 @@ const sendOtp = async (req, res, next) => {
     let transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
-        user: process.env.EMAIL,
-        pass: process.env.PASSWORD,
+        user: config.smtp.email,
+        pass: config.smtp.password,
       },
     });
 
     await transporter.sendMail({
-      from: process.env.EMAIL,
+      from: config.smtp.email,
       to: email,
       subject: "Your OTP Code",
       text: `Your OTP is: ${otp}`,

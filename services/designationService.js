@@ -5,7 +5,7 @@ const User = require("../models/user");
 
 const upsertDesignation = async (req, res, next) => {
   try {
-    const { id, name, userId } = req.body;
+    const { id, name, userId, status } = req.body;
 
     if (!name) {
       throw new CustomError("Name is required", 400);
@@ -14,9 +14,18 @@ const upsertDesignation = async (req, res, next) => {
     let designation;
 
     if (id) {
+      if (status === "Inactive") {
+        const usersInDesignation = await User.findOne({ designation: id });
+        if (usersInDesignation) {
+          throw new CustomError(
+            "Cannot update status: Users exist in this Designation",
+            400
+          );
+        }
+      }
       designation = await Designation.findByIdAndUpdate(
         id,
-        { name, modifiedBy: userId, modifiedTime: new Date() },
+        { name, modifiedBy: userId, modifiedTime: new Date(), status },
         { new: true, runValidators: true }
       );
 
@@ -46,7 +55,7 @@ const deleteDesignation = async (req, res, next) => {
     const { id } = req.params;
 
     // Check if any user exists with this designation
-    const userExists = await User.exists({ designation: id });
+    const userExists = await User.exists({ designation: id, isDeleted: false });
     if (userExists) {
       throw new CustomError(
         "Cannot delete: Users exist with this designation",

@@ -5,7 +5,8 @@ const User = require("../models/user");
 
 const upsertDepartment = async (req, res, next) => {
   try {
-    const { id, name, userId, departmentLead, parentDepartment } = req.body;
+    const { id, name, userId, departmentLead, parentDepartment, status } =
+      req.body;
 
     if (!name) {
       throw new CustomError("Name is required", 400);
@@ -15,6 +16,7 @@ const upsertDepartment = async (req, res, next) => {
       name,
       modifiedBy: userId,
       modifiedTime: new Date(),
+      status,
     };
     if (departmentLead) departmentData.departmentLead = departmentLead;
     if (parentDepartment) departmentData.parentDepartment = parentDepartment;
@@ -27,6 +29,16 @@ const upsertDepartment = async (req, res, next) => {
           "Parent department should not be the same as the department itself",
           400
         );
+      }
+
+      if (status === "Inactive") {
+        const usersInDepartment = await User.findOne({ department: id });
+        if (usersInDepartment) {
+          throw new CustomError(
+            "Cannot update status: Users exist in this Department",
+            400
+          );
+        }
       }
       // Update
       const unsetFields = {};
@@ -76,7 +88,7 @@ const deleteDepartment = async (req, res, next) => {
     const { id } = req.params;
 
     // Check if any user exists in this department
-    const userExists = await User.exists({ department: id });
+    const userExists = await User.exists({ department: id, isDeleted: false });
     if (userExists) {
       throw new CustomError(
         "Cannot delete: Users exist in this department",

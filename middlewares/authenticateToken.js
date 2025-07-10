@@ -1,8 +1,8 @@
 const jwt = require("jsonwebtoken");
 const CustomError = require("../utils/customError.js");
-require("dotenv").config();
+const config = require("../config.js");
 
-const JWT_SECRET = process.env.ACCESS_TOKEN_SECRET;
+const JWT_SECRET = config.jwt.AccessTokenSecretKey;
 
 const authenticateToken = (req, res, next) => {
   const token = req.header("Authorization")?.split(" ")[1];

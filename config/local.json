@@ -1,0 +1,24 @@
+
+
+{
+  "port": 4003,
+  "env": "local",
+  "mongoDb": {
+    "url": "mongodb://localhost:27017/",
+    "dbName": "appraisal_management"
+  },
+  "smtp": {
+    "email": "vijayholdingsinc@gmail.com",
+    "service": "gmail",
+    "password": "xxbkgytfwlkrgvwv"
+  },
+  "jwt": {
+    "AccessTokenSecretKey": "U1/zLDI29VweyxBHXZNZR8tPvezmSSp15o17SHiwPV0BcEUcIxFKnydyHrUuYvgJcixgv3qsPhX/Xgjp7LRoQg==",
+    "AccessTokenExpiresIn": "3h"
+  },
+  "s3": {
+    "AWS_ACCESS_KEY_ID": "AKIATIVJ4HZQIJQNMSNB",
+    "AWS_SECRET_ACCESS_KEY": "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",
+    "AWS_S3_BUCKET_NAME": "appraisal-management-assets"
+  }
+}

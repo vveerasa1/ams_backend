@@ -6,8 +6,7 @@ const { ObjectId } = require("mongodb");
 
 const createOrUpdatePoint = async (req, res, next) => {
   try {
-    const { id } = req.params; // Optional: present only during update
-    const { employeeId, pointsChange, balanceAfter } = req.body;
+    const { id, userId, employeeId, pointsChange, balanceAfter } = req.body;
 
     const transactionType = pointsChange > 0 ? "bonuses" : "deductions";
 
@@ -49,6 +48,8 @@ const createOrUpdatePoint = async (req, res, next) => {
         {
           ...req.body,
           transactionType,
+          modifiedBy: userId,
+          modifiedTime: new Date(),
           balanceAfter: newBalanceAfter,
         },
         { new: true }
@@ -73,6 +74,7 @@ const createOrUpdatePoint = async (req, res, next) => {
       console.log(newBalanceAfter);
       transaction = await Point.create({
         ...req.body,
+        createdBy: userId,
         transactionType,
         balanceAfter: newBalanceAfter,
       });
@@ -166,8 +168,12 @@ const getAllPoints = async (req, res, next) => {
       // Fetch and sort manually: Bonuses first, then others
       [points, total] = await Promise.all([
         Point.find(employeeFilter)
-          .populate("employeeId", "firstName lastName employeeId totalPoints")
+          .populate(
+            "employeeId",
+            "firstName lastName employeeId status totalPoints"
+          )
           .populate("createdBy", "firstName lastName")
+          .populate("modifiedBy", "firstName lastName")
           .skip(skip)
           .limit(parseInt(limit))
           .lean(),
@@ -180,8 +186,12 @@ const getAllPoints = async (req, res, next) => {
     } else {
       [points, total] = await Promise.all([
         Point.find(employeeFilter)
-          .populate("employeeId", "firstName lastName employeeId totalPoints")
+          .populate(
+            "employeeId",
+            "firstName lastName employeeId totalPoints status"
+          )
           .populate("createdBy", "firstName lastName")
+          .populate("modifiedBy", "firstName lastName")
           .sort(sortOptions)
           .skip(skip)
           .limit(parseInt(limit)),
@@ -292,7 +302,9 @@ const getPointById = async (req, res, next) => {
   try {
     const transaction = await Point.findById(req.params.id)
       .populate("employeeId", "firstName lastName employeeId")
-      .populate("createdBy", "firstName lastName employeeId");
+      .populate("createdBy", "firstName lastName employeeId")
+      .populate("modifiedBy", "firstName lastName employeeId");
+
     if (!transaction) throw new CustomError("Transaction not found", 404);
 
     return successResponse(
