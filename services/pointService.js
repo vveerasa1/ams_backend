@@ -6,7 +6,8 @@ const { ObjectId } = require("mongodb");
 
 const createOrUpdatePoint = async (req, res, next) => {
   try {
-    const { id, userId, employeeId, pointsChange, balanceAfter } = req.body;
+    const { id, userId, employeeId, pointsChange, balanceAfter } =
+      req.body;
 
     const transactionType = pointsChange > 0 ? "bonuses" : "deductions";
 
@@ -21,7 +22,7 @@ const createOrUpdatePoint = async (req, res, next) => {
       // 🛠 Update flow
       const existingTransaction = await Point.findById(id);
       if (!existingTransaction) {
-        throw new CustomError("Transaction not found", 404);
+        throw new CustomError("Point not found", 404);
       }
 
       const now = new Date();
@@ -29,7 +30,7 @@ const createOrUpdatePoint = async (req, res, next) => {
       const hoursDiff = (now - createdAt) / (1000 * 60 * 60);
       if (hoursDiff > 24) {
         throw new CustomError(
-          "You can only update transactions within 24 hours of creation",
+          "You can only update point within 24 hours of creation",
           403
         );
       }
@@ -87,7 +88,7 @@ const createOrUpdatePoint = async (req, res, next) => {
 
     return successResponse(
       res,
-      `Transaction ${id ? "updated" : "created"} successfully`,
+      `Point ${id ? "updated" : "created"} successfully`,
       transaction,
       id ? 200 : 201
     );

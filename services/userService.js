@@ -56,7 +56,8 @@ const createOrUpdateUser = async (req, res, next) => {
 
       if (
         existingUser._id?.toString() === modifierId &&
-        (data.status !== existingUser.status || data.role !== existingUser.role)
+        (data.status !== existingUser.status ||
+          data.role !== existingUser.role.toString())
       ) {
         throw new CustomError("You cannot update your own status or role", 403);
       }
@@ -338,7 +339,7 @@ const getAllEmployeesForReporting = async (req, res, next) => {
     // Fetch employees
     const employees = await User.find(
       filter,
-      "_id firstName lastName "
+      "_id firstName lastName"
     ).populate("designation", "name");
 
     return successResponse(res, "Employees fetched successfully", employees);
@@ -431,6 +432,13 @@ const deleteUser = async (req, res, next) => {
   try {
     const userIdToDelete = req.params.id;
 
+    const superAdminRole = await Role.findOne({ name: "Super Admin" });
+    const superAdmin = await User.findOne({ role: superAdminRole._id });
+    if (!superAdmin) throw new CustomError("Super admin not found", 404);
+
+    if (superAdmin._id.toString() === userIdToDelete.toString().trim()) {
+      throw new CustomError("Super Admin cannot be deleted", 404);
+    }
     // Step 1: Soft delete the user
     const user = await User.findByIdAndUpdate(
       userIdToDelete,
@@ -439,20 +447,12 @@ const deleteUser = async (req, res, next) => {
     );
 
     if (!user) throw new CustomError("User not found", 404);
-    const superAdminRole = await Role.findOne({ name: "Super Admin" });
-
-    // Step 2: Find Super Admin
-    const superAdmin = await User.findOne({ role: superAdminRole._id });
-    if (!superAdmin) throw new CustomError("Super admin not found", 404);
 
     const teamMembersToMove = user.teamMembers || [];
 
     // Step 3: Add deleted user's teamMembers to superAdmin (avoid duplicates)
     superAdmin.teamMembers = Array.from(
-      new Set([
-        ...(superAdmin.teamMembers || []),
-        ...teamMembersToMove.map((id) => id.toString()),
-      ])
+      new Set([...(superAdmin.teamMembers || []), ...teamMembersToMove])
     );
     await superAdmin.save();
 
@@ -1040,14 +1040,37 @@ const getTeamMembersByUserId = async (req, res, next) => {
     const { id } = req.params;
     const { search = "", department, designation } = req.query;
 
-    // Find the user and get their teamMembers array
-    const user = await User.findById(id).select("teamMembers");
-    if (!user || !user.teamMembers || user.teamMembers.length === 0) {
+    const visited = new Set(); // To prevent infinite loops
+    const queue = [id];
+    const allTeamMemberIds = new Set();
+
+    while (queue.length > 0) {
+      const currentUserId = queue.shift();
+      if (visited.has(currentUserId)) continue;
+
+      visited.add(currentUserId);
+
+      const user = await User.findById(currentUserId).select("teamMembers");
+
+      if (user?.teamMembers?.length) {
+        user.teamMembers.forEach((memberId) => {
+          if (!visited.has(String(memberId))) {
+            queue.push(String(memberId));
+            allTeamMemberIds.add(String(memberId));
+          }
+        });
+      }
+    }
+
+    if (allTeamMemberIds.size === 0) {
       return successResponse(res, "No team members found", []);
     }
 
-    // Build filter to search only within teamMembers
-    let filter = { _id: { $in: user.teamMembers }, isDeleted: false };
+    // Build filters
+    const filter = {
+      _id: { $in: Array.from(allTeamMemberIds) },
+      isDeleted: false,
+    };
 
     if (search) {
       const searchRegex = new RegExp(search, "i");
@@ -1058,14 +1081,9 @@ const getTeamMembersByUserId = async (req, res, next) => {
         { employeeId: searchRegex },
       ];
     }
-    if (designation) {
-      filter.designation = designation;
-    }
-    if (department) {
-      filter.department = department;
-    }
+    if (designation) filter.designation = designation;
+    if (department) filter.department = department;
 
-    // Fetch team members with search filter applied
     const teamMembers = await User.find(filter)
       .populate("role", "name")
       .populate("department", "name")

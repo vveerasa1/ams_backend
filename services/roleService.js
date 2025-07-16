@@ -6,7 +6,7 @@ const { successResponse } = require("../utils/responseHandler");
 
 const upsertRole = async (req, res, next) => {
   try {
-    const { id, name, permissions, description, status } = req.body;
+    const { id, userId, name, permissions, description, status } = req.body;
     let role;
     if (id) {
       if (status === "Inactive") {
@@ -21,14 +21,19 @@ const upsertRole = async (req, res, next) => {
       // Update
       role = await Role.findByIdAndUpdate(
         id,
-        { name, permissions, description, status },
+        { name, permissions, description, status, modifiedBy: userId },
         { new: true }
       );
       if (!role) throw new CustomError("Role not found", 404);
       return successResponse(res, "Role updated successfully", role);
     } else {
       // Create
-      role = await Role.create({ name, permissions, description });
+      role = await Role.create({
+        name,
+        permissions,
+        description,
+        addedBy: userId,
+      });
       return successResponse(res, "Role created successfully", role);
     }
   } catch (err) {
@@ -84,7 +89,9 @@ const getRoleById = async (req, res, next) => {
     const { id } = req.params;
     if (!id) throw new CustomError("Role Id is required", 404);
 
-    const role = await Role.findById(id);
+    const role = await Role.findById(id)
+      .populate("addedBy", "firstName lastName")
+      .populate("modifiedBy", "firstName lastName");
     return successResponse(res, "Roles fetched successfully", role);
   } catch (err) {
     next(err);

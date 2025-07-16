@@ -20,6 +20,14 @@ const RoleSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    addedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    modifiedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
 
     status: {
       type: String,

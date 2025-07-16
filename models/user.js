@@ -34,11 +34,13 @@ const UserSchema = new mongoose.Schema(
     department: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Department",
+      default: null,
     },
 
     designation: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Designation",
+      default: null,
     },
 
     dob: {
